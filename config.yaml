@@ -1,0 +1,15 @@
+# 定时任务配置
+scheduler:
+  report_time: "17:50"        # 每天生成日报的时间
+  deadline_time: "18:05"      # 自动代发的截止时间
+  check_interval_sec: 60      # 检查文件更新的频率(秒)
+  confirm_timeout_min: 15  # 确认等待时间
+
+# 文件路径
+paths:
+  todo_file: "./todo.md"
+  holiday_file: "./holidays.json"
+
+# 钉钉业务配置
+dingtalk:
+  report_template_name: "工作日报"

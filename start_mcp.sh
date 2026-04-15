@@ -1,0 +1,1 @@
+npx @modelcontextprotocol/inspector python mcp_server/server.py
