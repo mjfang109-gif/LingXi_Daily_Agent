@@ -1,5 +1,7 @@
 import os
+
 from openai import OpenAI
+
 from common.logger import get_logger
 
 logger = get_logger("LLM_Client")
@@ -7,12 +9,11 @@ logger = get_logger("LLM_Client")
 
 class ReportGenerator:
     def __init__(self):
-        # 请确保 .env 中配置了 LLM_API_KEY 和 LLM_BASE_URL
         self.client = OpenAI(
             api_key=os.getenv("LLM_API_KEY"),
-            base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+            base_url=os.getenv("LLM_BASE_URL")
         )
-        self.model = os.getenv("LLM_MODEL", "gpt-3.5-turbo")  # 可在 .env 中自定义模型
+        self.model = os.getenv("LLM_MODEL")  # 可在 .env 中自定义模型
 
     def generate(self, tasks: list) -> dict:
         """

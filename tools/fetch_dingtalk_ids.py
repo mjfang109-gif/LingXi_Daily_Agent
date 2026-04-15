@@ -1,6 +1,7 @@
-import requests
-import sys
 import os
+import sys
+
+import requests
 
 # 临时导入路径以使用 Config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

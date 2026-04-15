@@ -1,11 +1,10 @@
 import asyncio
-import os
-import sys
 import hashlib
+
+from agent.llm_client import ReportGenerator
+from agent.parser import TodoParser
 from common.config_loader import Config
 from common.logger import setup_logging, get_logger
-from agent.parser import TodoParser
-from agent.llm_client import ReportGenerator
 
 setup_logging()
 logger = get_logger("Agent_Main")
@@ -80,7 +79,7 @@ async def execute_report_workflow():
                 confirmed = await wait_for_confirmation(1)  # 最后一秒做最终判定
 
         if confirmed:
-            # 5. 调用 MCP 发送 (代码参考上一版)
+            # 5. 调用 MCP 发送
             await call_mcp_send(report)
             break
         else:

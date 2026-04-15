@@ -1,5 +1,7 @@
-import schedule
 import time
+
+import schedule
+
 from common.config_loader import Config
 from common.logger import get_logger
 

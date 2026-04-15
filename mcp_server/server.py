@@ -1,11 +1,13 @@
-import sys
 import os
+import sys
+
 from mcp.server.fastmcp import FastMCP
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common.logger import get_logger
 from mcp_server.services.dingtalk_api import DingTalkService
 from mcp_server.services.local_fs import LocalFileService
+from mcp_server.services.holiday_api import HolidayService
 
 logger = get_logger("MCP_Router")
 mcp = FastMCP("DingTalkTools")
@@ -88,6 +90,30 @@ def get_dingtalk_templates(user_id: str) -> str:
 
     output.append("\n💡 请挑选您要发送的模板，将其 ID 配置到环境变量 DINGTALK_TEMPLATE_ID 中。")
     return "\n".join(output)
+
+
+@mcp.tool()
+def check_statutory_holiday(date_str: str = None) -> str:
+    """
+    【日程工具】查询指定日期是否为法定节假日、调休工作日或普通周末。
+    参数 date_str: 日期字符串，格式为 YYYY-MM-DD。如果不传，则默认查询今天。
+    用途: 在生成日报或安排任务前，判断当天是否需要工作。
+    """
+    logger.info(f"MCP 接收到节假日查询请求，目标日期: {date_str if date_str else '今天'}")
+
+    result = HolidayService.get_status(date_str)
+
+    if not result.get("success"):
+        return f"查询失败: {result.get('error')}。系统已触发降级逻辑，建议按普通工作日/周末规则处理。"
+
+    is_work = result.get("is_workday")
+    desc = result.get("desc")
+
+    # 返回给 Agent 的自然语言描述越清晰越好
+    if is_work:
+        return f"✅ 需要工作。该日期为：{desc}。请继续执行生成日报等工作流。"
+    else:
+        return f"🛑 休息日。该日期为：{desc}。如果是今天，建议中止发日报的流程并提示用户正在休息。"
 
 
 if __name__ == "__main__":

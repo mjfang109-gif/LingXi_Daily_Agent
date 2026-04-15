@@ -1,7 +1,9 @@
-import requests
-import time
 import json
+import time
 import traceback
+
+import requests
+
 from common.config_loader import Config
 from common.logger import get_logger
 
