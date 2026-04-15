@@ -7,23 +7,35 @@ load_dotenv()
 
 
 class Config:
-    # 敏感信息从环境变量读取
-    APP_KEY = os.getenv("DINGTALK_APP_KEY")
-    APP_SECRET = os.getenv("DINGTALK_APP_SECRET")
-    USER_PHONE = os.getenv("DINGTALK_USER_PHONE")
+    # --- 钉钉应用凭证 (用于事件订阅和API调用) ---
+    CLIENT_ID = os.getenv("DINGTALK_CLIENT_ID")
+    CLIENT_SECRET = os.getenv("DINGTALK_CLIENT_SECRET")
+    
+    # --- 机器人和对话信息 ---
+    ROBOT_CODE = os.getenv("DINGTALK_ROBOT_CODE") # 机器人自身的Code
+    CHAT_ID = os.getenv("DINGTALK_CHAT_ID")       # 接收日报的群聊ID
+    USER_ID = os.getenv("DINGTALK_USER_ID")       # 接收日报的群聊ID
 
-    # 动态获取的 ID (初始运行工具后填入 .env)
-    USER_ID = os.getenv("DINGTALK_USER_ID")
-    TEMPLATE_ID = os.getenv("DINGTALK_TEMPLATE_ID")
+    # --- 钉钉回调配置 (用于互动卡片) ---
+    # 这个URL需要是公网可访问的，钉钉服务器会向这个地址发送回调事件
+    CALLBACK_URL_BASE = os.getenv("DINGTALK_CALLBACK_URL_BASE")
 
-    # 业务配置从 YAML 读取
+    # --- LLM 相关配置 ---
+    LLM_API_KEY = os.getenv("LLM_API_KEY")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL")
+    LLM_MODEL = os.getenv("LLM_MODEL")
+
+
+    # --- 业务配置从 YAML 读取 ---
     _yaml_config = {}
 
     @classmethod
     def load(cls):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(base_dir, 'config.yaml'), 'r', encoding='utf-8') as f:
-            cls._yaml_config = yaml.safe_load(f)
+        config_path = os.path.join(base_dir, 'config.yaml')
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cls._yaml_config = yaml.safe_load(f)
 
     @classmethod
     def get(cls, key_path, default=None):

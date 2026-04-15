@@ -8,8 +8,9 @@ scheduler:
 # 文件路径
 paths:
   todo_file: "./todo.md"
-  holiday_file: "./holidays.json"
+  holiday_file: "./holiday.json"
 
 # 钉钉业务配置
 dingtalk:
   report_template_name: "工作日报"
+  # 相关的AppKey, AppSecret等从 .env 文件加载

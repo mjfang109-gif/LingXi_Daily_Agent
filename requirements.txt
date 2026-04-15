@@ -1,6 +1,11 @@
-mcp==1.2.1
-requests==2.31.0
-python-dotenv==1.0.1
-schedule==1.2.1
-openai==1.14.2
-PyYAML==6.0.1
+# 核心功能
+openai>=1.0.0
+schedule>=1.2.0
+requests>=2.31.0
+
+# 配置与环境
+python-dotenv>=1.0.0
+PyYAML>=6.0.0
+
+# 钉钉官方SDK (用于主动API调用)
+dingtalk>=1.0.6

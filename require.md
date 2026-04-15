@@ -14,3 +14,9 @@
 | 10                                 | 动态感知 | MD5 热更新 | 倒计时期间，若 todo.md 内容改变，Agent 立即重新生成并重置倒计时。                                                       |
 | 11                                 | MCP隔离调用 | Agent定位 | Agent 作为“大脑”不碰底层 API                                                                           |
 | 12                                 | MCP隔离调用 | 解耦调用 | 调用方式：生成内容后通过本地进程唤起 mcp_server 发日志，极致解耦 ,调用方式：生成内容后通过本地进程唤起 mcp_server 发日志，极致解耦                 |
+
+# 项目依赖
+- openai
+- schedule
+- requests
+- dingtalk-api-sdk

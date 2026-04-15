@@ -1,4 +1,5 @@
 import os
+import json
 
 from openai import OpenAI
 
@@ -13,43 +14,63 @@ class ReportGenerator:
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL")
         )
-        self.model = os.getenv("LLM_MODEL")  # 可在 .env 中自定义模型
+        self.model = os.getenv("LLM_MODEL")
+        self.prompt_template = self._load_prompt_template()
+
+    def _load_prompt_template(self):
+        """Loads the prompt template from a file."""
+        prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "report_polish_prompt.txt")
+        try:
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.error(f"Prompt file not found: {prompt_path}")
+            return ""
+
+    def _format_task_for_prompt(self, task):
+        """将单个任务格式化为带状态和进度条的字符串"""
+        if task['is_completed']:
+            status = "[✅ 已完成]"
+        elif task['progress'] > 0:
+            status = f"[⏳ 推进中 {task['bar']} {task['progress']}%]"
+        else:
+            status = "[📅 计划中]"
+        
+        return f"{status} {task['content']}"
 
     def generate(self, tasks: list) -> dict:
         """
-        接收解析好的任务列表，返回润色后的今日工作和明日计划
-        tasks 格式: [{"content": "...", "date": "4.15", "is_completed": True}, ...]
+        接收解析好的任务列表，返回润色后的今日工作、明日计划和总结卡片
         """
-        today_tasks = [t['content'] for t in tasks if t['is_completed']]
-        tomorrow_tasks = [t['content'] for t in tasks if not t['is_completed']]
+        today_tasks = [t for t in tasks if t['is_completed']]
+        tomorrow_tasks = [t for t in tasks if not t['is_completed']]
 
-        prompt = f"""
-        你是一位高级职场助理，请根据以下极其简短的工作备忘，帮我扩写成一份正式、专业的工作日报。
-        请将口语化的词汇转换为专业的职场术语。
+        today_tasks_str = "\\n".join(self._format_task_for_prompt(t) for t in today_tasks) or "无"
+        tomorrow_tasks_str = "\\n".join(self._format_task_for_prompt(t) for t in tomorrow_tasks) or "无"
 
-        【今日已完成原始记录】：
-        {chr(10).join(today_tasks) if today_tasks else "无"}
+        if not self.prompt_template:
+            logger.error("Prompt template not loaded. Cannot generate report.")
+            return {"today_work": "生成失败", "tomorrow_plan": "生成失败", "summary_card": ""}
 
-        【明日计划原始记录】：
-        {chr(10).join(tomorrow_tasks) if tomorrow_tasks else "无"}
-
-        请严格按以下 JSON 格式返回，不要输出多余废话：
-        {{
-            "today_work": "1. 专业化润色后的第一条\\n2. 专业化润色后的第二条",
-            "tomorrow_plan": "1. 专业化润色后的第一条\\n2. 专业化润色后的第二条"
-        }}
-        """
+        prompt = self.prompt_template.format(
+            today_tasks=today_tasks_str,
+            tomorrow_tasks=tomorrow_tasks_str
+        )
 
         try:
             logger.info("正在调用大模型生成日报内容...")
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"}  # 强制返回 JSON
+                response_format={"type": "json_object"}
             )
             result = response.choices[0].message.content
-            import json
-            return json.loads(result)
+            # 确保返回的 JSON 包含所有期望的键
+            report_data = json.loads(result)
+            report_data.setdefault("today_work", "")
+            report_data.setdefault("tomorrow_plan", "")
+            report_data.setdefault("summary_card", "")
+            return report_data
         except Exception as e:
             logger.error(f"大模型调用失败: {e}")
-            return {"today_work": "生成失败", "tomorrow_plan": "生成失败"}
+            return {"today_work": "生成失败", "tomorrow_plan": "生成失败", "summary_card": ""}
