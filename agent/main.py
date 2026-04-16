@@ -1,155 +1,67 @@
 """
-LingXi Daily Agent — 主工作流编排（需求 7/10）
+LingXi Daily Agent — 主工作流编排
 
-工作流：
-  1. 前置门控检查（节假日 + 请假状态）
-  2. 解析 todo.md → LLM 润色 → 计算 MD5
-  3. 通过钉钉机器人单聊用户发送「普通卡片」预览
-  4. 进入 15 分钟双模等待：
-       • 手动模式：用户在钉钉回复 Y → 立即发送
-       • 热更新：todo.md 变动 → 重新生成并重置倒计时（需求 10）
-       • 超时自动：15 分钟无响应 → 自动调用 MCP 发送
-  5. 通过 MCP 子进程调用钉钉日报 API 发送（需求 11/12）
+需求覆盖：全面覆盖 Require.md 1-15 项，彻底剔除文件级轮询依赖。
 """
 import asyncio
-import hashlib
 import json
-import os
-import subprocess
 import sys
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 from agent.dingtalk_client import DingTalkClient
 from agent.llm_client import ReportGenerator
-from agent.parser import TodoParser
 from common.config_loader import Config
 from common.logger import get_logger, setup_logging
+from common.user_store import UserStore
+from mcp_server.services.dingtalk_api import DingTalkService
+from mcp_server.services.local_fs import LocalFileService
 
 setup_logging()
 logger = get_logger("Agent_Main")
 
-# ── 全局单例 ──────────────────────────────────────────────────
 _dingtalk = DingTalkClient()
-_last_report_date: Optional[date] = None  # 防止当日重复触发
+_last_report_date: dict[str, date] = {}
 
 
-# ═══════════════════════════════════════════════════════════════
-#  工具函数
-# ═══════════════════════════════════════════════════════════════
-
-def _md5_file(path: str) -> str:
-    """计算文件 MD5，文件不存在返回空串"""
-    try:
-        with open(path, "rb") as f:
-            return hashlib.md5(f.read()).hexdigest()
-    except FileNotFoundError:
-        return ""
-    except Exception as e:
-        logger.error(f"计算 MD5 异常: {e}")
-        return ""
-
-
-def _check_holiday() -> tuple[bool, str]:
-    """
-    节假日门控（需求 4）
-    读取 holiday.json，根据 isOffDay 字段判断是否为休息日
-    """
-    holiday_file = Config.get("paths.holiday_file", "./holiday.json")
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    if not os.path.exists(holiday_file):
-        logger.warning(f"节假日文件不存在: {holiday_file}，默认放行")
-        return False, "未配置节假日文件"
-
-    try:
-        with open(holiday_file, "r", encoding="utf-8") as f:
-            data: dict = json.load(f)
-
-        day_info = data.get(today)
-
-        # JSON 无记录时，降级为 Python 内置周末判断
-        if day_info is None:
-            if datetime.strptime(today, "%Y-%m-%d").weekday() >= 5:
-                return True, "普通周末"
-            return False, "普通工作日"
-
-        # 根据 isOffDay 字段判断
-        is_off_day = day_info.get("isOffDay", False)
-        holiday_name = day_info.get("name", "")
-
-        if is_off_day:
-            return True, f"法定节假日: {holiday_name}"
-        else:
-            return False, f"调休工作日: {holiday_name}"
-
-    except Exception as e:
-        logger.error(f"读取节假日文件失败: {e}")
-        return False, "读取异常（默认放行）"
-
-
-def _check_attendance() -> tuple[bool, str]:
-    """
-    钉钉考勤状态门控（需求 5）
-    使用钉钉考勤接口：POST /topapi/attendance/getusergroup
-    或使用审批接口：POST /topapi/processinstance/listids
-    """
-    try:
-        if not Config.USER_ID:
-            logger.warning("未配置 USER_ID，跳过考勤查询")
-            return False, "未配置用户ID"
-
-        from mcp_server.services.dingtalk_api import DingTalkService
-        return DingTalkService.is_user_on_leave()
-
-    except Exception as e:
-        logger.warning(f"考勤接口异常: {e}，默认放行")
-        return False, f"考勤接口异常: {e}"
-
-
-def _check_preconditions() -> bool:
-    """整合环境门控（需求 3/4/5）"""
-    is_holiday, reason = _check_holiday()
-    if is_holiday:
-        logger.info(f"🛑 环境门控阻断 — {reason}")
-        return False
-
-    is_on_leave, reason = _check_attendance()
-    if is_on_leave:
-        logger.info(f"🛑 环境门控阻断 — {reason}")
-        return False
-
-    logger.info("✅ 前置门控通过，准备生成日报")
+def _check_preconditions(user_id: str) -> bool:
+    is_holiday, reason = LocalFileService.is_holiday()
+    if is_holiday: return False
+    is_on_leave, leave_reason = DingTalkService.is_user_on_leave(user_id=user_id)
+    if is_on_leave: return False
     return True
 
 
-def _build_report(todo_path: str) -> tuple[dict, str]:
-    """
-    解析 todo.md → LLM 润色，返回 (report_dict, file_md5)
-    """
-    tasks = TodoParser.parse_file(todo_path)
-    report = ReportGenerator().generate(tasks)
-    md5 = _md5_file(todo_path)
-    return report, md5
+def _build_report_for_user(user_id: str) -> tuple[dict, int]:
+    """严格对齐当日工作并清理过期"""
+    UserStore.clean_outdated(user_id)
+    tasks = UserStore.get_tasks(user_id)
+    version = UserStore.get_task_version(user_id)
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 严格按照当天切分
+    today_t = [t for t in tasks if t["date"] == today_str]
+    future_t = [t for t in tasks if t["date"] > today_str]
+
+    if not today_t and not future_t:
+        return {"today_work": "（今日无任务）", "tomorrow_plan": "（无）", "summary_card": ""}, version
+
+    report = ReportGenerator().generate(today_t, future_t)
+    return report, version
 
 
-# ═══════════════════════════════════════════════════════════════
-#  MCP 解耦调用（需求 11/12）
-# ═══════════════════════════════════════════════════════════════
+async def _call_mcp_send(report: dict, user_id: str) -> tuple[bool, str]:
+    logger.info(f"→ 通过子进程唤起 MCP Server 为用户 {user_id} 发送日报...")
+    template_id = UserStore.get_template_id(user_id)
+    contents_config = UserStore.get_contents_config(user_id)
 
-async def _call_mcp_send(report: dict) -> tuple[bool, str]:
-    """
-    通过独立子进程唤起 mcp_server，极致解耦（需求 12）
-    Agent 作为"大脑"不碰底层 API（需求 11）
-    """
-    logger.info("→ 通过子进程唤起 MCP Server 发送日报...")
-    payload_str = json.dumps(
-        {
-            "today_work": report.get("today_work", ""),
-            "tomorrow_plan": report.get("tomorrow_plan", ""),
-        },
-        ensure_ascii=False,
-    )
+    payload_str = json.dumps({
+        "today_work": report.get("today_work", ""),
+        "tomorrow_plan": report.get("tomorrow_plan", ""),
+        "user_id": user_id,
+        "template_id": template_id,
+        "contents_config": contents_config,
+    }, ensure_ascii=False)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -164,11 +76,9 @@ async def _call_mcp_send(report: dict) -> tuple[bool, str]:
 
         if proc.returncode == 0:
             logger.info(f"✅ MCP 发送成功: {output}")
-            # 尝试从输出中解析 report_id
             report_id = ""
             try:
-                out_json = json.loads(output)
-                report_id = out_json.get("report_id", "")
+                report_id = json.loads(output).get("report_id", "")
             except Exception:
                 pass
             return True, report_id
@@ -176,188 +86,142 @@ async def _call_mcp_send(report: dict) -> tuple[bool, str]:
             err_msg = stderr.decode("utf-8", errors="replace").strip()
             logger.error(f"❌ MCP 子进程返回非零: {err_msg}")
             return False, err_msg
-
     except asyncio.TimeoutError:
-        logger.error("❌ MCP 子进程超时")
         return False, "发送超时（>30s）"
     except Exception as e:
-        logger.error(f"❌ 唤起 MCP 子进程异常: {e}")
         return False, str(e)
 
 
-# ═══════════════════════════════════════════════════════════════
-#  双模确认 + 热更新等待（需求 7/10）
-# ═══════════════════════════════════════════════════════════════
-
 async def _wait_for_confirm_or_timeout(
-        timeout_min: int,
-        todo_path: str,
-        initial_md5: str,
+        user_id: str, timeout_min: int, initial_version: int,
 ) -> tuple[str, dict | None]:
-    """
-    等待期间：
-      - 每 check_interval_sec 秒检测 todo.md 是否变动（需求 10）
-      - 用户在钉钉回复 Y → 返回 ("confirmed", None)
-      - 用户在钉钉回复 N → 返回 ("cancelled", None)
-      - 文件变动    → 重新生成报告，返回 ("regenerated", new_report)
-      - 超时        → 返回 ("timeout", None)
-    """
+    """完全基于内存中 task_version 变化的热更新等待循环"""
     deadline = datetime.now() + timedelta(minutes=timeout_min)
     check_interval = Config.get("scheduler.check_interval_sec", 10)
-    current_md5 = initial_md5
+    current_version = initial_version
 
-    logger.info(f"⏳ 进入双模等待，超时时间 {timeout_min} 分钟（{deadline.strftime('%H:%M:%S')} 前）")
+    logger.info(f"⏳ 用户 {user_id} 进入双模等待，{timeout_min} 分钟（至 {deadline.strftime('%H:%M:%S')}）")
 
     while datetime.now() < deadline:
         remaining = (deadline - datetime.now()).total_seconds()
 
-        # ① 检查用户钉钉回复
-        user_input = await DingTalkClient.get_user_response(timeout=0)
-        if user_input == "Y":
-            logger.info("👤 用户钉钉回复 Y，立即发送")
+        # 检查 Y/N 回复
+        response = UserStore.get_response_nowait(user_id)
+        if response == "Y":
             return "confirmed", None
-        elif user_input == "N":
-            logger.info("👤 用户钉钉回复 N，取消发送")
+        elif response == "N":
             return "cancelled", None
 
-        # ② 热更新检测（需求 10）
-        new_md5 = _md5_file(todo_path)
-        if new_md5 and new_md5 != current_md5:
-            logger.info("🔄 检测到 todo.md 内容变更，重新生成日报并重置倒计时...")
-            new_report, new_md5 = _build_report(todo_path)
-            current_md5 = new_md5
+        # 检查基于 WebSocket 的任务实时更新版本
+        new_version = UserStore.get_task_version(user_id)
+        if new_version != current_version:
+            logger.info(f"🔄 用户 {user_id} 任务更新（version {current_version}→{new_version}），重新生成日报...")
+            new_report, _ = _build_report_for_user(user_id)
+            current_version = new_version
             return "regenerated", new_report
 
         await asyncio.sleep(min(check_interval, remaining))
 
-    logger.info("⌛ 等待超时，触发自动发送")
+    logger.info(f"⌛ 用户 {user_id} 等待超时，触发自动发送")
     return "timeout", None
 
 
-# ═══════════════════════════════════════════════════════════════
-#  完整工作流
-# ═══════════════════════════════════════════════════════════════
+async def execute_report_workflow(user_id: str):
+    if not _check_preconditions(user_id): return
 
-async def execute_report_workflow():
-    """执行一次完整的日报工作流"""
-    global _last_report_date
-
-    # 门控检查
-    if not _check_preconditions():
+    today = datetime.now().date()
+    if _last_report_date.get(user_id) == today:
+        logger.info(f"⚠️  用户 {user_id} 今日已发送日报，跳过")
         return
 
-    todo_path = Config.get("paths.todo_file", "./todo.md")
+    tasks = UserStore.get_tasks(user_id)
+    if not tasks:
+        logger.info(f"⚠️  用户 {user_id} 无任务数据，等待用户在钉钉发送 todolist")
+        return
     timeout_min = Config.get("scheduler.confirm_timeout_min", 15)
-    report, md5 = _build_report(todo_path)
+    report, version = _build_report_for_user(user_id)
 
-    logger.info("📋 日报已生成，准备发送预览卡片...")
-
-    # 循环处理热更新：发卡片 → 等待 → 若触发热更新则重发卡片
     iteration = 0
+    outcome = "timeout"
+
     while True:
         iteration += 1
-        if iteration > 10:  # 防御性上限
-            logger.warning("⚠️  热更新循环次数超过上限，强制发送")
+        if iteration > 10:
+            logger.warning("⚠️  热更新循环超过上限，强制发送")
             break
 
-        # 发送预览卡片（需求 7）
         title = f"✨ 工作日报预览（{datetime.now().strftime('%m/%d %H:%M')}）"
         sent_ok = _dingtalk.send_card_to_user(
-            title=title,
-            today_work=report.get("today_work", "（无）"),
+            title=title, today_work=report.get("today_work", "（无）"),
             tomorrow_plan=report.get("tomorrow_plan", "（无）"),
             summary_card=report.get("summary_card", ""),
-            countdown_min=timeout_min,
-            mode="auto",
+            countdown_min=timeout_min, mode="auto", user_id=user_id,
         )
-        if not sent_ok:
-            logger.error("❌ 卡片发送失败，中止工作流")
-            return
+        if not sent_ok: return
 
-        # 进入双模等待
-        outcome, new_report = await _wait_for_confirm_or_timeout(timeout_min, todo_path, md5)
+        outcome, new_report = await _wait_for_confirm_or_timeout(user_id, timeout_min, version)
 
         if outcome == "regenerated":
-            # 文件变动 → 用新报告重新循环
-            report = new_report
-            md5 = _md5_file(todo_path)
-            logger.info("🔄 用更新后的内容重新发送预览卡片...")
+            if new_report is not None:
+                report = new_report
+            version = UserStore.get_task_version(user_id)
             continue
-
-        # 确认 / 超时 / 取消 → 跳出循环
         break
 
     if outcome == "cancelled":
-        _dingtalk.send_text_to_user("ℹ️  已取消本次日报发送，今日不再自动提交。")
-        logger.info("用户取消，工作流结束")
+        _dingtalk.send_text_to_user("ℹ️  已取消本次日报发送，今日不再自动提交。", user_id=user_id)
         return
 
-    # 通过 MCP 发送日报（需求 11/12）
-    logger.info("📤 开始通过 MCP 发送日报...")
-    success, detail = await _call_mcp_send(report)
-
-    # 发送结果通知卡片
-    _dingtalk.send_result_card_to_user(
-        success=success,
-        report_id=detail if success else "",
-        error=detail if not success else "",
-    )
+    success, detail = await _call_mcp_send(report, user_id)
+    _dingtalk.send_result_card_to_user(success=success, report_id=detail if success else "",
+                                       error=detail if not success else "", user_id=user_id)
 
     if success:
-        _last_report_date = datetime.now().date()
-        logger.info("🎉 日报发送成功，工作流完成")
-    else:
-        logger.error(f"💥 日报发送失败: {detail}")
+        _last_report_date[user_id] = today
+        logger.info(f"🎉 用户 {user_id} 日报发送成功")
 
 
-# ═══════════════════════════════════════════════════════════════
-#  主循环
-# ═══════════════════════════════════════════════════════════════
 async def main():
-    global _last_report_date
-
     logger.info("=" * 60)
     logger.info("  LingXi Daily Agent 启动")
     logger.info("=" * 60)
 
     if not _dingtalk.is_configured:
-        logger.error("❌ 钉钉配置不完整，请检查 .env 文件（CLIENT_ID/SECRET/ROBOT_CODE/USER_ID）")
+        logger.error("❌ 钉钉配置不完整，请检查 .env 文件")
         return
 
-    report_time_str = Config.get("scheduler.report_time", "17:50")
-    try:
-        report_hour, report_minute = map(int, report_time_str.split(":"))
-    except ValueError:
-        logger.error(f"日报时间格式错误: {report_time_str}，默认使用 17:50")
-        report_hour, report_minute = 17, 50
+    report_time_str = Config.get("scheduler.report_time", "18:30")
+    report_hour, report_minute = map(int, report_time_str.split(":"))
 
-    logger.info(f"📅 每日 {report_time_str} 触发日报生成")
-    logger.info("💬 等待触发... (在钉钉回复 Y 确认 / N 取消)")
+    _dingtalk.start_message_listener()
 
-    # 启动钉钉消息监听
-    callback_port = Config.get("server.callback_port", 8080)
-    _dingtalk.start_message_listener(port=callback_port)
-    logger.info(f"📡 钉钉消息监听已启动，端口: {callback_port}")
+    for uid in UserStore.all_user_ids():
+        UserStore.get_or_create(uid)
 
-    # 测试模式：立即执行一次工作流
-    test_mode = "--test" in sys.argv
-    if test_mode:
-        logger.info("🧪 测试模式：立即执行日报工作流...")
-        await execute_report_workflow()
-        logger.info("🧪 测试完成，退出程序")
+    configured_users = UserStore.all_user_ids()
+    if "--test" in sys.argv:
+        idx = sys.argv.index("--test")
+        test_user = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else (
+            configured_users[0] if configured_users else Config.USER_ID)
+        await execute_report_workflow(test_user)
         return
+
+    triggered_today: set[str] = set()
+    logger.info(f"⏰ 等待每日 {report_time_str} 触发日报...")
 
     while True:
         now = datetime.now()
-        if (
-                now.hour == report_hour
-                and now.minute == report_minute
-                and now.date() != _last_report_date
-        ):
-            logger.info(f"⏰ 触发时间 {report_time_str} 到达，启动工作流...")
-            await execute_report_workflow()
-            _last_report_date = now.date()
-            await asyncio.sleep(60)  # 防止同分钟重复触发
+        if now.hour == report_hour and now.minute == report_minute:
+            today = now.date()
+            all_users = UserStore.all_user_ids() or [Config.USER_ID]
+            for uid in all_users:
+                day_key = f"{uid}:{today}"
+                if day_key not in triggered_today:
+                    triggered_today.add(day_key)
+                    asyncio.create_task(execute_report_workflow(uid))
+
+            triggered_today = {k for k in triggered_today if k.endswith(str(today))}
+            await asyncio.sleep(60)
         else:
             await asyncio.sleep(10)
 

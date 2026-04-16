@@ -10,4 +10,4 @@ if [ -f "${FILE}" ]; then
   rm -rf "${FILE}"
 fi
 sleep 3
-$COMMAND -i "*.py,*.yaml,*.yml,*.txt" -e ".venv/*,logs/*" -O "${FILE}"
+$COMMAND -O "${FILE}"

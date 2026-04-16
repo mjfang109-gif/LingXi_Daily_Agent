@@ -5,21 +5,52 @@
 
 # 定时任务配置
 scheduler:
-  report_time: "17:50"          # 每天生成日报的触发时间 (HH:MM)
-  deadline_time: "18:05"        # 超时后自动代发的截止时间
-  confirm_timeout_min: 1       # 人工确认等待窗口（分钟）
-  check_interval_sec: 10        # 文件热更新轮询间隔（秒）
+  report_time: "18:10"          # 每天生成日报的触发时间 (HH:MM)
+  confirm_timeout_min: 15       # 人工确认等待窗口（分钟）
+  check_interval_sec: 10        # 任务热更新轮询间隔（秒）
 
-# 文件路径
+# 文件路径（节假日 JSON 只读，不修改）
 paths:
-  todo_file: "./todo.md"
   holiday_file: "./holiday.json"
 
-# 钉钉业务配置
+# 钉钉业务配置（全局默认值，可被 per-user 配置覆盖）
 dingtalk:
-  report_template_name: "工作日报"
-  # 卡片消息相关
-  card_logo_url: ""             # 可选：卡片头部 logo URL
   report_field_today: "今日工作"
   report_field_tomorrow: "明日计划"
-  report_dd_from: "钉钉"
+  report_dd_from: "report"
+
+# AI 大模型相关配置
+llm:
+  chat_system_prompt: |
+    你现在是 LingXi 办公助理，一个全能的 AI 助手。你的核心本职工作是帮用户整理工作日报。
+    但此时用户没有发送任务清单，而是在和你交流（提问、闲聊、查资料等）。
+    请发挥你作为高级 AI 的能力，给出准确、专业、友好的回答。
+    回答要求：
+    1. 简明扼要，排版清晰，适合在钉钉等移动端聊天软件中阅读。
+    2. 你的回答必须能真正解决用户的问题（如解释概念、提供代码、回答百科等）。
+    3. 在回答的结尾，用一句话委婉且简短地提醒用户：如果需要记录今日工作，请使用格式「1. 任务描述@日期@状态」发给你。
+
+# ── 多用户配置（需求 14/15）────────────────────────────────────
+# 每个用户独立配置 template_id 和字段排序/key
+# user_id: 钉钉 UserID（通过 tools/fetch_dingtalk_ids.py 获取）
+# template_id: 该用户使用的日报模板 ID
+# contents: 日报字段配置（sort=排序, key=字段名，与模板保持一致）
+#
+# 示例（填入实际值后取消注释）：
+# users:
+#   - user_id: "xxxxxx001"
+#     template_id: "template_abc"
+#     contents:
+#       - sort: 1
+#         key: "今日工作"
+#       - sort: 2
+#         key: "明日计划"
+#
+#   - user_id: "xxxxxx002"
+#     template_id: "template_xyz"
+#     contents:
+#       - sort: 1
+#         key: "工作内容"
+#       - sort: 2
+#         key: "明日安排"
+users: [ ]
