@@ -1,121 +1,187 @@
+"""
+MCP Server — 钉钉工具路由层（需求 11/12）
+
+两种启动方式：
+  1. FastMCP 模式（Agent 通过 MCP 协议调用）：
+       python -m mcp_server.server
+  2. CLI 子进程模式（Agent 通过 subprocess 解耦调用）：
+       python -m mcp_server.server --action send_report --payload '{"today_work":"...","tomorrow_plan":"..."}'
+"""
+import argparse
+import json
 import os
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from mcp.server.fastmcp import FastMCP
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from common.logger import get_logger
+from common.logger import get_logger, setup_logging
 from mcp_server.services.dingtalk_api import DingTalkService
-from mcp_server.services.local_fs import LocalFileService
 from mcp_server.services.holiday_api import HolidayService
+from mcp_server.services.local_fs import LocalFileService
 
-logger = get_logger("MCP_Router")
-mcp = FastMCP("DingTalkTools")
+setup_logging()
+logger = get_logger("MCP_Server")
+mcp = FastMCP("LingXiDailyTools")
 
+
+# ═══════════════════════════════════════════════════════════════
+#  MCP Tools（FastMCP 协议模式）
+# ═══════════════════════════════════════════════════════════════
 
 @mcp.tool()
 def check_environment_status() -> dict:
     """
-    环境门控核心 Tool。Agent 在生成日报前必须调用此工具。
-    返回是否允许发送日报的综合判定。
+    环境门控核心 Tool（需求 3/4/5）
+    Agent 在生成日报前必须调用此工具，返回综合放行判定。
     """
-    logger.info("Agent 请求检查环境门控状态...")
+    logger.info("Agent 请求检查环境门控...")
 
-    # 1. 检查节假日
     is_holiday, holiday_reason = LocalFileService.is_holiday()
     if is_holiday:
-        logger.info(f"环境门控阻断: {holiday_reason}")
+        logger.info(f"门控阻断: {holiday_reason}")
         return {"can_run": False, "reason": holiday_reason}
 
-    # 2. 检查钉钉请假状态
     is_on_leave, leave_reason = DingTalkService.is_user_on_leave()
     if is_on_leave:
-        logger.info(f"环境门控阻断: {leave_reason}")
+        logger.info(f"门控阻断: {leave_reason}")
         return {"can_run": False, "reason": leave_reason}
 
-    logger.info("环境门控检查通过，允许生成日报。")
+    logger.info("✅ 环境门控通过")
     return {"can_run": True, "reason": "工作日且正常在岗"}
 
 
 @mcp.tool()
 def send_dingtalk_report(today_work: str, tomorrow_plan: str) -> str:
-    """发送工作日报到钉钉"""
+    """
+    发送工作日报到钉钉日志（需求 12）
+    Agent 调用此工具，底层走 DingTalkService.create_report
+    """
     logger.info("Agent 请求发送钉钉日报")
     try:
         res = DingTalkService.create_report(today_work, tomorrow_plan)
-        if res.get("errcode") == 0:
-            return f"✅ 发送成功，日志ID: {res.get('result', {}).get('report_id')}"
+
+        # create_report 返回的格式是 {"success": bool, "report_id": str, "data": ...}
+        if res.get("success"):
+            report_id = res.get("report_id", "")
+            return json.dumps({"success": True, "report_id": report_id}, ensure_ascii=False)
         else:
-            return f"❌ 发送失败: {res.get('errmsg')}"
+            return json.dumps({"success": False, "error": "未知错误"}, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"路由层捕获异常: {e}")
-        return f"❌ 系统异常: {e}"
-
-
-@mcp.tool()
-def get_dingtalk_userid(mobile: str) -> str:
-    """
-    【初始化工具 1】根据手机号查询钉钉 UserID。
-    如果缺少 DINGTALK_USER_ID，请先调用此工具。
-    """
-    logger.info(f"MCP 接收到 UserID 查询请求，手机号: {mobile}")
-
-    user_res = DingTalkService.get_userid_by_mobile(mobile)
-    if not user_res.get("success"):
-        return f"❌ 查询 UserID 失败:\n{user_res.get('error')}"
-
-    user_id = user_res.get("userid")
-    return f"✅ 成功获取 UserID: {user_id}\n💡 请将此 ID 配置到环境变量 DINGTALK_USER_ID 中。"
-
-
-@mcp.tool()
-def get_dingtalk_templates(user_id: str) -> str:
-    """
-    【初始化工具 2】根据 UserID 查询该用户可见的所有日志模板列表。
-    必须先获取到 UserID 后，才能调用此工具查询模板。
-    """
-    logger.info(f"MCP 接收到模板查询请求，UserID: {user_id}")
-
-    tpl_res = DingTalkService.get_report_templates(user_id)
-    if not tpl_res.get("success"):
-        return f"❌ 获取日志模板失败: {tpl_res.get('error')}"
-
-    templates = tpl_res.get("templates", [])
-    if not templates:
-        return "⚠️ 查询成功，但该用户当前没有任何可见的日志模板。"
-
-    output = [f"📋 该用户可见的日志模板 ({len(templates)}个):"]
-    for t in templates:
-        output.append(f"  - 模板名称: 【{t['name']}】 | ID: {t['template_id']}")
-
-    output.append("\n💡 请挑选您要发送的模板，将其 ID 配置到环境变量 DINGTALK_TEMPLATE_ID 中。")
-    return "\n".join(output)
+        logger.error(f"路由层异常: {e}")
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
 @mcp.tool()
 def check_statutory_holiday(date_str: str = None) -> str:
     """
-    【日程工具】查询指定日期是否为法定节假日、调休工作日或普通周末。
-    参数 date_str: 日期字符串，格式为 YYYY-MM-DD。如果不传，则默认查询今天。
-    用途: 在生成日报或安排任务前，判断当天是否需要工作。
+    查询指定日期是否为法定节假日（需求 4）
+    date_str: YYYY-MM-DD，不传则查今天
     """
-    logger.info(f"MCP 接收到节假日查询请求，目标日期: {date_str if date_str else '今天'}")
-
+    logger.info(f"节假日查询: {date_str or '今天'}")
     result = HolidayService.get_status(date_str)
 
     if not result.get("success"):
-        return f"查询失败: {result.get('error')}。系统已触发降级逻辑，建议按普通工作日/周末规则处理。"
+        return f"查询失败: {result.get('error')}。建议按工作日处理。"
 
-    is_work = result.get("is_workday")
-    desc = result.get("desc")
-
-    # 返回给 Agent 的自然语言描述越清晰越好
+    is_work = result["is_workday"]
+    desc = result["desc"]
     if is_work:
-        return f"✅ 需要工作。该日期为：{desc}。请继续执行生成日报等工作流。"
-    else:
-        return f"🛑 休息日。该日期为：{desc}。如果是今天，建议中止发日报的流程并提示用户正在休息。"
+        return f"✅ 需要工作。该日期为：{desc}。请继续执行日报工作流。"
+    return f"🛑 休息日。该日期为：{desc}。建议中止日报流程。"
 
+
+@mcp.tool()
+def get_dingtalk_userid(mobile: str) -> str:
+    """【初始化工具】根据手机号查询钉钉 UserID"""
+    res = DingTalkService.get_userid_by_mobile(mobile)
+    if res.get("success"):
+        return f"✅ UserID: {res['userid']}\n💡 请写入 .env 的 DINGTALK_USER_ID"
+    return f"❌ 查询失败: {res.get('error')}"
+
+
+@mcp.tool()
+def get_dingtalk_templates(user_id: str) -> str:
+    """【初始化工具】查询用户可见的日志模板列表"""
+    res = DingTalkService.get_report_templates(user_id)
+    if not res.get("success"):
+        return f"❌ 获取模板失败: {res.get('error')}"
+    templates = res.get("templates", [])
+    if not templates:
+        return "⚠️ 该用户没有可见的日志模板"
+    lines = [f"📋 共 {len(templates)} 个模板:"]
+    for t in templates:
+        lines.append(f"  - 【{t['name']}】 ID: {t['template_id']}")
+    lines.append("\n💡 将目标模板 ID 写入 .env 的 DINGTALK_TEMPLATE_ID")
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  CLI 子进程模式（需求 12：Agent 通过 subprocess 极致解耦调用）
+# ═══════════════════════════════════════════════════════════════
+
+def _cli_main():
+    parser = argparse.ArgumentParser(description="MCP Server CLI 模式")
+    parser.add_argument("--action", required=True, help="要执行的动作")
+    parser.add_argument("--payload", default="{}", help="JSON 格式的参数")
+    args = parser.parse_args()
+
+    try:
+        payload = json.loads(args.payload)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"success": False, "error": f"Payload JSON 解析失败: {e}"}))
+        sys.exit(1)
+
+    if args.action == "send_report":
+        today_work = payload.get("today_work", "")
+        tomorrow_plan = payload.get("tomorrow_plan", "")
+
+        if not today_work and not tomorrow_plan:
+            print(json.dumps({"success": False, "error": "today_work 和 tomorrow_plan 均为空"}))
+            sys.exit(1)
+
+        try:
+            res = DingTalkService.create_report(today_work, tomorrow_plan)
+
+            # create_report 返回的格式是 {"success": bool, "report_id": str, "data": ...}
+            if res.get("success"):
+                report_id = res.get("report_id", "")
+                print(json.dumps({"success": True, "report_id": report_id}, ensure_ascii=False))
+                sys.exit(0)
+            else:
+                print(json.dumps({"success": False, "error": "未知错误"}, ensure_ascii=False))
+                sys.exit(1)
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False))
+            sys.exit(1)
+
+    elif args.action == "check_env":
+        is_holiday, reason = LocalFileService.is_holiday()
+        if is_holiday:
+            print(json.dumps({"can_run": False, "reason": reason}, ensure_ascii=False))
+        else:
+            is_leave, reason2 = DingTalkService.is_user_on_leave()
+            if is_leave:
+                print(json.dumps({"can_run": False, "reason": reason2}, ensure_ascii=False))
+            else:
+                print(json.dumps({"can_run": True, "reason": "工作日且正常在岗"}, ensure_ascii=False))
+        sys.exit(0)
+
+    else:
+        print(json.dumps({"success": False, "error": f"未知 action: {args.action}"}))
+        sys.exit(1)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  入口判断
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    logger.info("MCP Server 已启动，加载门控服务与钉钉服务完成。")
-    mcp.run()
+    if "--action" in sys.argv:
+        # CLI 子进程模式
+        _cli_main()
+    else:
+        # FastMCP 服务模式
+        logger.info("MCP Server 启动（FastMCP 协议模式）")
+        mcp.run()

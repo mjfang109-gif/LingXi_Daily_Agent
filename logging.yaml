@@ -3,15 +3,15 @@ disable_existing_loggers: false
 
 formatters:
   standard:
-    format: '%(asctime)s - [%(levelname)s] - %(module)s - %(message)s'
+    format: '%(asctime)s - [%(levelname)s] - %(name)s - %(message)s'
     datefmt: '%Y-%m-%d %H:%M:%S'
 
 handlers:
   console:
     class: logging.StreamHandler
-    level: DEBUG     # <--- 调低级别，方便看调试信息
+    level: DEBUG
     formatter: standard
-    stream: ext://sys.stderr   # <--- 【关键修复】必须输出到 stderr，绝不能用 stdout
+    stream: ext://sys.stderr
 
   file:
     class: logging.handlers.TimedRotatingFileHandler
@@ -24,5 +24,5 @@ handlers:
     encoding: utf8
 
 root:
-  level: DEBUG       # <--- 根级别也调成 DEBUG
-  handlers: [ console, file ]
+  level: DEBUG
+  handlers: [console, file]

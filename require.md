@@ -17,6 +17,6 @@
 
 # 项目依赖
 - openai
-- schedule
-- requests
-- dingtalk-api-sdk
+  - schedule
+  - requests
+  - dingtalk-api-sdk
