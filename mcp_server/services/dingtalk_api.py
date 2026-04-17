@@ -5,6 +5,7 @@ DingTalkService — 钉钉底层 API 封装（MCP 层使用）
 支持多用户：create_report / is_user_on_leave 接受 user_id 参数（需求 14/15）
 """
 import json
+import threading
 import time
 import traceback
 
@@ -19,6 +20,7 @@ logger = get_logger("DingTalk_Service")
 class DingTalkService:
     _token: str | None = None
     _token_expire_at: float = 0
+    _token_lock: threading.Lock = threading.Lock()  # 用于保护 Token 刷新的线程锁
 
     @staticmethod
     def _mask(secret: str) -> str:
@@ -35,47 +37,54 @@ class DingTalkService:
         获取 AccessToken，本地缓存 115 分钟
         :return: access_token string
         """
-        # 检查缓存是否有效
+        # 双重检查锁定（Double-Checked Locking）避免并发刷新
         if cls._token and time.time() < cls._token_expire_at:
             logger.debug("使用缓存的 DingTalk AccessToken")
             return cls._token
+        
+        # 使用锁保护 Token 刷新过程
+        with cls._token_lock:
+            # 再次检查，防止多个线程同时等待锁后重复刷新
+            if cls._token and time.time() < cls._token_expire_at:
+                logger.debug("使用缓存的 DingTalk AccessToken (锁内检查)")
+                return cls._token
+            
+            logger.info("--- [API Call] 获取钉钉 AccessToken ---")
 
-        logger.info("--- [API Call] 获取钉钉 AccessToken ---")
+            if not Config.CLIENT_ID or not Config.CLIENT_SECRET:
+                logger.error("配置缺失: DINGTALK_CLIENT_ID 或 CLIENT_SECRET 未配置")
+                raise ValueError("缺少 DINGTALK_CLIENT_ID / CLIENT_SECRET")
 
-        if not Config.CLIENT_ID or not Config.CLIENT_SECRET:
-            logger.error("配置缺失: DINGTALK_CLIENT_ID 或 CLIENT_SECRET 未配置")
-            raise ValueError("缺少 DINGTALK_CLIENT_ID / CLIENT_SECRET")
+            url = "https://oapi.dingtalk.com/gettoken"
+            params = {
+                "appkey": Config.CLIENT_ID,
+                "appsecret": Config.CLIENT_SECRET
+            }
 
-        url = "https://oapi.dingtalk.com/gettoken"
-        params = {
-            "appkey": Config.CLIENT_ID,
-            "appsecret": Config.CLIENT_SECRET
-        }
+            # 日志中脱敏显示密钥
+            logger.debug(f"请求参数: appkey={cls._mask(Config.CLIENT_ID)}, appsecret={cls._mask(Config.CLIENT_SECRET)}")
 
-        # 日志中脱敏显示密钥
-        logger.debug(f"请求参数: appkey={cls._mask(Config.CLIENT_ID)}, appsecret={cls._mask(Config.CLIENT_SECRET)}")
+            try:
+                resp = requests.get(url, params=params, timeout=10)
+                data = resp.json()
 
-        try:
-            resp = requests.get(url, params=params, timeout=10)
-            data = resp.json()
+                logger.debug(f"响应数据: {json.dumps(data, ensure_ascii=False)}")
 
-            logger.debug(f"响应数据: {json.dumps(data, ensure_ascii=False)}")
+                if data.get("errcode") != 0:
+                    error_msg = data.get('errmsg', 'Unknown Error')
+                    logger.error(f"Token 获取失败 (errcode={data.get('errcode')}): {error_msg}")
+                    raise RuntimeError(f"Token 获取失败: {error_msg}")
 
-            if data.get("errcode") != 0:
-                error_msg = data.get('errmsg', 'Unknown Error')
-                logger.error(f"Token 获取失败 (errcode={data.get('errcode')}): {error_msg}")
-                raise RuntimeError(f"Token 获取失败: {error_msg}")
+                cls._token = data["access_token"]
+                # 7200s - 5min (300s) 缓冲 = 6900s
+                cls._token_expire_at = time.time() + 6900
+                logger.info("✅ DingTalk AccessToken 已刷新并缓存")
+                return cls._token
 
-            cls._token = data["access_token"]
-            # 7200s - 5min (300s) 缓冲 = 6900s
-            cls._token_expire_at = time.time() + 6900
-            logger.info("✅ DingTalk AccessToken 已刷新并缓存")
-            return cls._token
-
-        except Exception as e:
-            logger.error(f"❌ 获取 Token 异常: {e}")
-            logger.debug(traceback.format_exc())
-            raise
+            except Exception as e:
+                logger.error(f"❌ 获取 Token 异常: {e}")
+                logger.debug(traceback.format_exc())
+                raise
 
     # ── 发送日志 ──────────────────────────────────────────────
 
@@ -317,14 +326,23 @@ class DingTalkService:
 
             if data.get("errcode") == 0:
                 raw = data.get("result", {}).get("template_list", [])
-                templates = [
-                    {
-                        "name": t.get("name"),
-                        "template_id": t.get("report_code") or t.get("template_id") or t.get("id"),
-                    }
-                    for t in raw
-                ]
+                templates = []
+                for t in raw:
+                    # 尝试从多个可能的字段名中获取 template_id
+                    # 根据实际测试，钉钉API返回的字段名为 template_id
+                    tmpl_id = t.get("template_id")
+                    
+                    tmpl_name = t.get("name") or t.get("template_name")
+                    
+                    templates.append({
+                        "name": tmpl_name,
+                        "template_id": tmpl_id,
+                        # 保留原始数据以便调试
+                        "_raw": t
+                    })
+                
                 logger.info(f"✅ 查询到 {len(templates)} 个模板")
+                logger.debug(f"模板详情: {json.dumps(templates, ensure_ascii=False, indent=2)}")
                 return {"success": True, "templates": templates}
             else:
                 logger.warning(f"查询模板失败: {data.get('errmsg')}")

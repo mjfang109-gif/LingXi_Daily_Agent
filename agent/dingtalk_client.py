@@ -179,6 +179,11 @@ class DingTalkClient:
 
             threading.Thread(target=_process_ai_chat, daemon=True).start()
 
+        # 关键修复：注册回调函数到 MCP 服务层
+        logger.info("📝 注册消息监听回调函数...")
+        self._get_service().start_message_listener(handle_incoming_message)
+        logger.info("✅ 消息监听器已启动")
+
     def send_markdown_text_to_user(self, content: str, user_id: str | None = None) -> bool:
         """发送纯 Markdown 文本消息（用于闲聊或简单通知）"""
         try:

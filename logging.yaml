@@ -20,7 +20,7 @@ handlers:
     filename: logs/agent.log
     when: midnight
     interval: 1
-    backupCount: 7
+    backupCount: 3  # 保留 3 天的日志，防止磁盘空间耗尽
     encoding: utf8
 
 root:

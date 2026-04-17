@@ -219,6 +219,14 @@ async def main():
         logger.error("❌ 钉钉配置不完整，请检查 .env 文件")
         return
 
+    # 自动检查并更新节假日数据（完全自动化，无需手动维护）
+    logger.info("📅 检查节假日数据...")
+    try:
+        from common.holiday_auto_update import check_and_update_holidays
+        check_and_update_holidays()
+    except Exception as e:
+        logger.warning(f"⚠️  节假日数据检查失败，将使用降级逻辑: {e}")
+
     report_time_str = Config.get("scheduler.report_time", "18:30")
     report_hour, report_minute = map(int, report_time_str.split(":"))
 
@@ -235,24 +243,48 @@ async def main():
         await execute_report_workflow(test_user)
         return
 
-    triggered_today: set[str] = set()
+    # 使用精确的时间调度，避免轮询竞态条件
+    from datetime import timedelta
+    
     logger.info(f"⏰ 等待每日 {report_time_str} 触发日报...")
+    
+    # 记录已触发的用户和日期，防止重复发送
+    triggered_reports: set[str] = set()
 
     while True:
         now = datetime.now()
-        if now.hour == report_hour and now.minute == report_minute:
-            today = now.date()
-            all_users = UserStore.all_user_ids() or [Config.USER_ID]
-            for uid in all_users:
-                day_key = f"{uid}:{today}"
-                if day_key not in triggered_today:
-                    triggered_today.add(day_key)
-                    asyncio.create_task(execute_report_workflow(uid))
-
-            triggered_today = {k for k in triggered_today if k.endswith(str(today))}
-            await asyncio.sleep(60)
+        today = now.date()
+        
+        # 计算今天的触发时间点
+        today_trigger = now.replace(hour=report_hour, minute=report_minute, second=0, microsecond=0)
+        
+        # 如果当前时间已过今天的触发时间，则计算明天的触发时间
+        if now >= today_trigger:
+            next_trigger = today_trigger + timedelta(days=1)
         else:
-            await asyncio.sleep(10)
+            next_trigger = today_trigger
+        
+        # 清理过期的触发记录（只保留今天的）
+        triggered_reports = {k for k in triggered_reports if k.endswith(str(today))}
+        
+        # 等待到下一个触发时间点
+        wait_seconds = (next_trigger - now).total_seconds()
+        if wait_seconds > 0:
+            logger.debug(f"⏳ 下次触发时间: {next_trigger.strftime('%Y-%m-%d %H:%M:%S')}, 等待 {wait_seconds:.0f} 秒")
+            await asyncio.sleep(wait_seconds)
+        
+        # 触发时刻到达，执行日报工作流
+        trigger_date = next_trigger.date()
+        all_users = UserStore.all_user_ids() or [Config.USER_ID]
+        
+        for uid in all_users:
+            day_key = f"{uid}:{trigger_date}"
+            if day_key not in triggered_reports:
+                triggered_reports.add(day_key)
+                logger.info(f"🚀 触发用户 {uid} 的日报工作流 (日期: {trigger_date})")
+                asyncio.create_task(execute_report_workflow(uid))
+            else:
+                logger.debug(f"⚠️  用户 {uid} 今日已触发，跳过")
 
 
 if __name__ == "__main__":

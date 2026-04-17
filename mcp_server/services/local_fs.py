@@ -6,6 +6,8 @@ JSON 格式（与实际 holiday.json 对齐，只读，不修改）：
   "2026-01-01": { "date": "2026-01-01", "name": "元旦", "isOffDay": true },
   "2026-01-04": { "date": "2026-01-04", "name": "元旦调休", "isOffDay": false }
 }
+
+注意：建议配合 HolidayService 使用，实现自动同步更新
 """
 import json
 import os

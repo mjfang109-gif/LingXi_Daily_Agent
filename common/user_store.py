@@ -2,6 +2,7 @@
 UserStore — 多用户会话管理
 新增：过期任务的垃圾回收机制（clean_outdated_tasks）
 """
+import json
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ class UserSession:
     # 新增：模板缓存 {template_id: {"name": "...", "contents": [...]}}
     templates_cache: dict = field(default_factory=dict)
     default_template_id: str = ""  # 用户的默认模板（最近使用的）
+    last_active: datetime = field(default_factory=datetime.now)  # 最后活动时间，用于清理闲置会话
 
     def merge_tasks(self, new_tasks: list) -> int:
         """
@@ -58,20 +60,30 @@ class UserSession:
 
                 if key in existing_by_key:
                     idx, old_task = existing_by_key[key]
-                    # 如果任务内容相同但其他字段有变化，则更新
-                    if old_task != t:
+                    # 明确定义需要追踪的字段，避免字典浅比较的不确定性
+                    task_changed = (
+                        old_task.get('content') != t.get('content') or
+                        old_task.get('progress') != t.get('progress') or
+                        old_task.get('is_completed') != t.get('is_completed') or
+                        old_task.get('date') != t.get('date')
+                    )
+                    
+                    if task_changed:
                         self.tasks[idx] = t
                         existing_by_key[key] = (idx, t)
                         updated = True
+                        logger.debug(f"🔄 更新任务: {t['content']} @ {t['date']}")
                 else:
                     # 新任务，追加到列表
                     self.tasks.append(t)
                     existing_by_key[key] = (len(self.tasks) - 1, t)
                     updated = True
+                    logger.debug(f"➕ 新增任务: {t['content']} @ {t['date']}")
 
             # 仅在有变更时递增版本号
             if updated:
                 self.task_version += 1
+                logger.info(f"📊 任务版本更新至 v{self.task_version}")
 
             return self.task_version
 
@@ -211,6 +223,8 @@ class UserStore:
         session = cls.get_or_create(user_id)
         # 调用会话对象的 merge_tasks 方法进行实际合并
         version = session.merge_tasks(new_tasks)
+        # 更新最后活动时间
+        session.last_active = datetime.now()
         return version
 
     @classmethod
@@ -288,7 +302,10 @@ class UserStore:
             return None
         try:
             # 尝试非阻塞地获取队列中的消息
-            return session.confirm_queue.get_nowait()
+            response = session.confirm_queue.get_nowait()
+            # 更新最后活动时间
+            session.last_active = datetime.now()
+            return response
         except queue.Empty:
             # 如果队列为空，捕获异常并返回 None
             return None
@@ -349,9 +366,11 @@ class UserStore:
 
             # 遍历传入的模板列表
             for idx, tmpl in enumerate(templates):
-                logger.debug(f"[cache_user_templates] 处理模板 #{idx + 1}: {tmpl}")
+                logger.debug(f"[cache_user_templates] 处理模板 #{idx + 1}: {json.dumps(tmpl, ensure_ascii=False)}")
 
+                # 根据实际测试，钉钉API返回的字段名为 template_id
                 tmpl_id = tmpl.get("template_id")
+                
                 # 兼容 template_name 和 name 两种字段名
                 tmpl_name = tmpl.get("template_name") or tmpl.get("name", "")
 
@@ -359,7 +378,7 @@ class UserStore:
 
                 # 只有当 template_id 存在时才处理
                 if not tmpl_id:
-                    logger.warning(f"   ⚠️ 模板 #{idx + 1} 缺少 template_id，跳过")
+                    logger.warning(f"   ⚠️ 模板 #{idx + 1} 缺少 template_id，原始数据: {json.dumps(tmpl, ensure_ascii=False)}")
                     continue
 
                 # 将模板信息存入会话的缓存字典中
@@ -469,3 +488,34 @@ class UserStore:
         session = cls.get_or_create(user_id)
         # 返回字典的浅拷贝，防止外部修改影响内部缓存
         return dict(session.templates_cache)
+
+    @classmethod
+    def cleanup_inactive_sessions(cls, max_idle_days: int = 30) -> int:
+        """
+        清理超过指定天数无活动的会话，防止内存泄漏。
+        
+        Args:
+            max_idle_days (int): 最大闲置天数，默认 30 天。
+            
+        Returns:
+            int: 清理的会话数量。
+        """
+        now = datetime.now()
+        inactive_users = []
+        
+        with cls._store_lock:
+            for uid, session in cls._sessions.items():
+                idle_days = (now - session.last_active).days
+                if idle_days > max_idle_days:
+                    inactive_users.append(uid)
+                    logger.info(f"🗑️ 检测到闲置会话: {uid}, 已闲置 {idle_days} 天")
+            
+            # 执行清理
+            for uid in inactive_users:
+                del cls._sessions[uid]
+                logger.info(f"✅ 已清理闲置会话: {uid}")
+        
+        if inactive_users:
+            logger.info(f"📊 共清理 {len(inactive_users)} 个闲置会话")
+        
+        return len(inactive_users)

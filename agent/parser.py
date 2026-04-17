@@ -2,6 +2,8 @@
 TodoParser — 任务解析器
 支持：单日期、日期范围（如 4.17-4.21）
 """
+import json
+import os
 import re
 from datetime import datetime, timedelta
 
@@ -144,7 +146,8 @@ def _parse_date_range(raw: str, now_dt: datetime) -> list[str]:
     return [_normalize_date(raw, now_dt)]
 
 
-# 全局节假日缓存
+# 全局节假日缓存（已废弃，统一使用 LocalFileService）
+# 保留此代码仅为向后兼容，新代码应使用 mcp_server.services.local_fs.LocalFileService
 _HOLIDAY_CACHE = {}
 _HOLIDAY_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "holiday.json")
 
@@ -166,6 +169,9 @@ def _load_holidays_local():
 def _is_workday_local(date_str: str) -> bool:
     """
     基于本地缓存判断是否为工作日
+    
+    注意：此函数已废弃，请使用 mcp_server.services.local_fs.LocalFileService.is_holiday()
+    保留此函数仅为向后兼容
     """
     _load_holidays_local()
 
@@ -179,7 +185,7 @@ def _is_workday_local(date_str: str) -> bool:
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         return dt.weekday() < 5  # 0-4 为工作日
-    except:
+    except Exception:
         return True
 
 
@@ -235,7 +241,10 @@ def _parse_line(line: str, now_dt: datetime) -> list[dict]:
     tasks = []
     for idx, date_str in enumerate(date_list):
         # 性能优化：使用本地缓存判断工作日，避免频繁 API 调用
-        if not _is_workday_local(date_str):
+        # 统一使用 LocalFileService 进行节假日判断
+        from mcp_server.services.local_fs import LocalFileService
+        is_holiday, _ = LocalFileService.is_holiday(date_str)
+        if is_holiday:
             logger.debug(f"[_parse_line] 跳过非工作日: {date_str}")
             continue
 
