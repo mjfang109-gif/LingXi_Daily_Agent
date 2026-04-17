@@ -35,7 +35,12 @@ class LocalFileService:
         if not date_str:
             date_str = datetime.now().strftime("%Y-%m-%d")
 
-        holiday_file = Config.get("paths.holiday_file", "./holiday.json")
+        holiday_file = Config.get("paths.holiday_file", "holiday.json")
+        
+        # 如果是相对路径，转换为项目根目录的绝对路径
+        if not os.path.isabs(holiday_file):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            holiday_file = os.path.join(project_root, holiday_file)
 
         if not os.path.exists(holiday_file):
             logger.warning(f"节假日文件不存在: {holiday_file}，默认放行")

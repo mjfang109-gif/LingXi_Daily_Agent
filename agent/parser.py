@@ -12,12 +12,14 @@ from common.logger import get_logger
 logger = get_logger("Parser")
 
 # 支持单日期和日期范围（如 4.17, 4.17-4.21, 2026-04-17-2026-04-21）
+# 注意：content 中允许包含逗号，通过 @ 符号来分隔内容和日期
+# 增强容错：支持 @4.17-4.22、@4.17-@4.22、4.17-4.22 等多种格式
 _PATTERN = re.compile(
     r"^\d+[\.、]\s*"
-    r"(?P<content>[^@，,\n]+?)"
-    r"(?:[，,]\s*进度(?P<progress>\d+)%)?"
-    r"(?:@(?P<date>[\d\./\-]+(?:-[\d\./\-]+)?))?"  # 支持日期范围
-    r"(?:@(?P<status>已完成|未完成))?"
+    r"(?P<content>.+?)"  # 允许内容中包含逗号
+    r"(?:[，,]\s*进度(?P<progress>\d+)%)?"  # 可选的进度信息
+    r"(?:@?(?P<date>[\d\./\-]+(?:-@?[\d\./\-]+)?))?"  # 可选的日期或日期范围，@ 可选，容忍多余的 @
+    r"(?:@(?P<status>已完成|未完成))?"  # 可选的状态
     r"\s*$"
 )
 
@@ -79,7 +81,7 @@ def _normalize_date(raw: str, now_dt: datetime) -> str:
 def _parse_date_range(raw: str, now_dt: datetime) -> list[str]:
     """
     解析日期范围，返回日期列表。
-    支持格式：4.17-4.21, 04-17-04-21, 2026-04-17-2026-04-21 等。
+    支持格式：4.17-4.21, @4.17-4.21, @4.17-@4.21, 04-17-04-21, 2026-04-17-2026-04-21 等。
 
     Args:
         raw (str): 原始日期范围字符串（如 "4.17-4.21"）
@@ -91,8 +93,8 @@ def _parse_date_range(raw: str, now_dt: datetime) -> list[str]:
     if not raw or "-" not in raw:
         return [_normalize_date(raw, now_dt)]
 
-    # 统一分隔符
-    normalized = raw.strip().replace("/", "-").replace(".", "-")
+    # 统一分隔符，并移除多余的 @ 符号（容错处理）
+    normalized = raw.strip().replace("/", "-").replace(".", "-").replace("@", "")
 
     # 尝试两种分割方式：按 - 分割成 2 或 4 个部分
     parts = normalized.split("-")
@@ -149,7 +151,8 @@ def _parse_date_range(raw: str, now_dt: datetime) -> list[str]:
 # 全局节假日缓存（已废弃，统一使用 LocalFileService）
 # 保留此代码仅为向后兼容，新代码应使用 mcp_server.services.local_fs.LocalFileService
 _HOLIDAY_CACHE = {}
-_HOLIDAY_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "holiday.json")
+# 使用项目根目录的 holiday.json
+_HOLIDAY_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "holiday.json")
 
 
 def _load_holidays_local():

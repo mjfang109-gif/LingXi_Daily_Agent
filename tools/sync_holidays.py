@@ -27,8 +27,11 @@ from common.logger import get_logger, setup_logging
 setup_logging()
 logger = get_logger("HolidaySync")
 
-# 节假日 API（使用 timor.tech，免费且稳定）
-HOLIDAY_API_URL = "https://timor.tech/api/holiday/year/{year}"
+# 节假日 API（使用多个备用源）
+HOLIDAY_API_URLS = [
+    # 主用：timor.tech（免费稳定）
+    "https://timor.tech/api/holiday/year/{year}",
+]
 
 
 def fetch_holiday_data(year: int) -> dict:
@@ -43,38 +46,68 @@ def fetch_holiday_data(year: int) -> dict:
     """
     logger.info(f"🌐 正在获取 {year} 年节假日数据...")
     
-    try:
-        url = HOLIDAY_API_URL.format(year=year)
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        
-        data = resp.json()
-        
-        if data.get("code") != 0:
-            logger.error(f"❌ API 返回错误: {data.get('msg', '未知错误')}")
-            return {}
-        
-        # 转换 API 返回格式为本地格式
-        holidays = {}
-        holiday_list = data.get("holiday", {})
-        
-        for date_str, info in holiday_list.items():
-            # API 返回的日期格式可能是 "2026-1-1"，需要标准化为 "2026-01-01"
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            normalized_date = dt.strftime("%Y-%m-%d")
+    # 尝试多个 API 源
+    for api_url_template in HOLIDAY_API_URLS:
+        try:
+            url = api_url_template.format(year=year)
+            logger.debug(f"   尝试 API: {url}")
             
-            holidays[normalized_date] = {
-                "date": normalized_date,
-                "name": info.get("name", "未知节日"),
-                "isOffDay": info.get("holiday", False),  # holiday=true 表示休息日
+            # 添加请求头，模拟浏览器请求（避免403）
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             }
-        
-        logger.info(f"✅ 成功获取 {year} 年数据，共 {len(holidays)} 条记录")
-        return holidays
-        
-    except Exception as e:
-        logger.error(f"❌ 获取 {year} 年数据失败: {e}")
-        return {}
+            
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            
+            data = resp.json()
+            
+            # 根据不同 API 的返回格式进行解析
+            if "timor.tech" in api_url_template:
+                # timor.tech 格式
+                if data.get("code") != 0:
+                    logger.warning(f"   ❌ API 返回错误: {data.get('msg', '未知错误')}")
+                    continue
+                            
+                holidays = {}
+                holiday_list = data.get("holiday", {})
+                            
+                for date_str, info in holiday_list.items():
+                    # API 返回的日期格式可能是 "01-01" 或 "2026-01-01"
+                    try:
+                        # 尝试完整格式 YYYY-MM-DD
+                        if len(date_str) == 10 and '-' in date_str:
+                            dt = datetime.strptime(date_str, "%Y-%m-%d")
+                        # 处理短格式 MM-DD（需要补全年份）
+                        elif len(date_str) == 5 and '-' in date_str:
+                            dt = datetime.strptime(f"{year}-{date_str}", "%Y-%m-%d")
+                        else:
+                            logger.warning(f"   ⚠️  无法解析日期格式: '{date_str}'")
+                            continue
+                        
+                        normalized_date = dt.strftime("%Y-%m-%d")
+                                    
+                        holidays[normalized_date] = {
+                            "date": normalized_date,
+                            "name": info.get("name", "未知节日"),
+                            "isOffDay": info.get("holiday", False),  # holiday=true 表示休息日
+                        }
+                    except ValueError as e:
+                        logger.warning(f"   ⚠️  日期解析失败: '{date_str}', 错误: {e}")
+                        continue
+                            
+                logger.info(f"✅ 成功获取 {year} 年数据（timor.tech），共 {len(holidays)} 条记录")
+                return holidays
+            
+        except Exception as e:
+            logger.warning(f"   ⚠️ API 请求失败: {e}")
+            continue
+    
+    # 所有 API 都失败
+    logger.error(f"❌ 所有 API 源均无法获取 {year} 年数据")
+    return {}
 
 
 def load_existing_holidays(file_path: str) -> dict:
@@ -165,7 +198,12 @@ def sync_holidays(years: list = None, file_path: str = None, force: bool = False
     if file_path is None:
         # 使用配置文件中的路径，或默认路径
         from common.config_loader import Config
-        file_path = Config.get("paths.holiday_file", "./holiday.json")
+        file_path = Config.get("paths.holiday_file", "holiday.json")
+        
+        # 如果是相对路径，转换为项目根目录的绝对路径
+        if not os.path.isabs(file_path):
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            file_path = os.path.join(project_root, file_path)
     
     logger.info("=" * 60)
     logger.info("  节假日数据同步工具")

@@ -34,6 +34,18 @@ def check_and_update_holidays() -> bool:
     try:
         # 获取配置文件中的路径
         holiday_file = Config.get("paths.holiday_file", "holiday.json")
+                
+        # 如果是相对路径，转换为项目根目录的绝对路径
+        if not os.path.isabs(holiday_file):
+            import sys
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            holiday_file = os.path.join(project_root, holiday_file)
+                
+        # 如果是相对路径，转换为项目根目录的绝对路径
+        if not os.path.isabs(holiday_file):
+            import sys
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            holiday_file = os.path.join(project_root, holiday_file)
         
         current_year = datetime.now().year
         next_year = current_year + 1
@@ -103,7 +115,12 @@ def get_holiday_stats() -> dict:
         统计信息字典
     """
     try:
-        holiday_file = Config.get("paths.holiday_file", "./holiday.json")
+        holiday_file = Config.get("paths.holiday_file", "holiday.json")
+        
+        # 如果是相对路径，转换为项目根目录的绝对路径
+        if not os.path.isabs(holiday_file):
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            holiday_file = os.path.join(project_root, holiday_file)
         
         if not os.path.exists(holiday_file):
             return {"error": "文件不存在"}
