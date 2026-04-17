@@ -18,9 +18,28 @@ dingtalk:
   report_field_today: "今日工作"
   report_field_tomorrow: "明日计划"
   report_dd_from: "report"
+  # 新增：日报模板名称匹配规则（支持多个关键词）
+  daily_report_name_keywords:
+    - "安建数科一般员工日志"
+    - "每日日报"
+
 
 # AI 大模型相关配置
 llm:
+  # 用户位置信息（用于天气等问题问答）
+  # 格式：城市名 或 "经度,纬度" 或 "城市,省份,国家"
+  location: "合肥市"
+  # 位置上下文提示词模板，{location} 会被替换为实际位置
+  location_prompt: "你已了解用户位于「{location}」，当用户询问天气、出行、本地资讯等相关问题时，可以结合该位置给出更准确的回答。"
+  # 是否启用联网搜索
+  # 常见 provider 配置：
+  # - qwen: 阿里千问，使用 extra_body.enable_search
+  # - deepseek: DeepSeek，使用 extra_body.enable_search
+  # - moonshot: 月之暗面 Moonshot，使用 extra_body.search_options.enable
+  # - zhipu: 智谱 GLM，使用 extra_body.search_retrieval
+  # - custom: 自定义 extra_body 参数
+  web_search:
+    provider: "qwen"  # 默认启用阿里千问联网
   chat_system_prompt: |
     你现在是 LingXi 办公助理，一个全能的 AI 助手。你的核心本职工作是帮用户整理工作日报。
     但此时用户没有发送任务清单，而是在和你交流（提问、闲聊、查资料等）。

@@ -13,9 +13,9 @@ class Config:
     CLIENT_SECRET = os.getenv("DINGTALK_CLIENT_SECRET")
 
     # ── 机器人和用户信息 ──────────────────────────────────────
-    ROBOT_CODE = os.getenv("DINGTALK_ROBOT_CODE")      # 单聊发消息用
-    USER_ID = os.getenv("DINGTALK_USER_ID")            # 默认接收用户（单用户模式）
-    TEMPLATE_ID = os.getenv("DINGTALK_TEMPLATE_ID")   # 默认日报模板 ID
+    ROBOT_CODE = os.getenv("DINGTALK_ROBOT_CODE")  # 单聊发消息用
+    USER_ID = os.getenv("DINGTALK_USER_ID")  # 默认接收用户（单用户模式）
+    TEMPLATE_ID = os.getenv("DINGTALK_TEMPLATE_ID")  # 默认日报模板 ID
 
     # ── LLM ──────────────────────────────────────────────────
     LLM_API_KEY = os.getenv("LLM_API_KEY")

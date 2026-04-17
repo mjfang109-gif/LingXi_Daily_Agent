@@ -53,7 +53,8 @@ def _build_report_for_user(user_id: str) -> tuple[dict, int]:
 async def _call_mcp_send(report: dict, user_id: str) -> tuple[bool, str]:
     logger.info(f"→ 通过子进程唤起 MCP Server 为用户 {user_id} 发送日报...")
     template_id = UserStore.get_template_id(user_id)
-    contents_config = UserStore.get_contents_config(user_id)
+    # 核心修改：动态获取该模板的字段配置
+    contents_config = UserStore.get_template_contents(user_id, template_id)
 
     payload_str = json.dumps({
         "today_work": report.get("today_work", ""),
@@ -127,19 +128,34 @@ async def _wait_for_confirm_or_timeout(
 
 
 async def execute_report_workflow(user_id: str):
-    if not _check_preconditions(user_id): return
+    logger.info(f"🚀 开始执行用户 {user_id} 的日报工作流")
+
+    if not _check_preconditions(user_id):
+        logger.info(f"⏭️  用户 {user_id} 前置检查未通过，跳过日报生成")
+        return
 
     today = datetime.now().date()
     if _last_report_date.get(user_id) == today:
         logger.info(f"⚠️  用户 {user_id} 今日已发送日报，跳过")
         return
 
+    # 核心修复：先清理过期任务，再获取有效任务
+    logger.info(f"🗑️ 清理用户 {user_id} 的过期任务...")
+    UserStore.clean_outdated(user_id)
+
     tasks = UserStore.get_tasks(user_id)
     if not tasks:
-        logger.info(f"⚠️  用户 {user_id} 无任务数据，等待用户在钉钉发送 todolist")
+        logger.info(f"⚠️  用户 {user_id} 无有效任务数据（可能已全部过期），等待用户在钉钉发送任务清单")
         return
+
+    logger.info(f"📋 用户 {user_id} 当前有 {len(tasks)} 条有效任务")
+
     timeout_min = Config.get("scheduler.confirm_timeout_min", 15)
     report, version = _build_report_for_user(user_id)
+
+    logger.info(f"✅ LLM 日报生成完成")
+    logger.debug(f"今日工作: {report.get('today_work', '')[:100]}")
+    logger.debug(f"明日计划: {report.get('tomorrow_plan', '')[:100]}")
 
     iteration = 0
     outcome = "timeout"
@@ -150,18 +166,25 @@ async def execute_report_workflow(user_id: str):
             logger.warning("⚠️  热更新循环超过上限，强制发送")
             break
 
-        title = f"✨ 工作日报预览（{datetime.now().strftime('%m/%d %H:%M')}）"
+        title = f"工作日报预览（{datetime.now().strftime('%m/%d %H:%M')}）"
+        logger.info(f"📤 发送预览卡片 (第 {iteration} 次)")
+
         sent_ok = _dingtalk.send_card_to_user(
             title=title, today_work=report.get("today_work", "（无）"),
             tomorrow_plan=report.get("tomorrow_plan", "（无）"),
-            summary_card=report.get("summary_card", ""),
             countdown_min=timeout_min, mode="auto", user_id=user_id,
         )
-        if not sent_ok: return
+
+        if not sent_ok:
+            logger.error("❌ 发送预览卡片失败，终止工作流")
+            return
+
+        logger.info(f"✅ 预览卡片发送成功，进入等待确认阶段")
 
         outcome, new_report = await _wait_for_confirm_or_timeout(user_id, timeout_min, version)
 
         if outcome == "regenerated":
+            logger.info("🔄 检测到任务更新，重新生成日报")
             if new_report is not None:
                 report = new_report
             version = UserStore.get_task_version(user_id)
@@ -169,16 +192,22 @@ async def execute_report_workflow(user_id: str):
         break
 
     if outcome == "cancelled":
-        _dingtalk.send_text_to_user("ℹ️  已取消本次日报发送，今日不再自动提交。", user_id=user_id)
+        logger.info("❌ 用户取消日报发送")
+        _dingtalk.send_text_to_user("已取消本次日报发送，今日不再自动提交。", user_id=user_id)
         return
 
+    logger.info(f"📮 开始提交日报到钉钉日志系统")
     success, detail = await _call_mcp_send(report, user_id)
+
+    logger.info(f"📨 发送结果通知")
     _dingtalk.send_result_card_to_user(success=success, report_id=detail if success else "",
                                        error=detail if not success else "", user_id=user_id)
 
     if success:
         _last_report_date[user_id] = today
-        logger.info(f"🎉 用户 {user_id} 日报发送成功")
+        logger.info(f"🎉 用户 {user_id} 日报发送成功，报告ID: {detail}")
+    else:
+        logger.error(f"❌ 用户 {user_id} 日报发送失败: {detail}")
 
 
 async def main():
