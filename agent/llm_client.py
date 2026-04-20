@@ -71,7 +71,7 @@ class ReportGenerator:
 
             raw = response.choices[0].message.content
             logger.info(f"[LLM.generate] 原始响应长度: {len(raw) if raw else 0} 字符")
-            logger.debug(f"[LLM.generate] 原始响应内容:\n{raw}")
+            logger.info(f"[LLM.generate] 原始响应内容:\n{raw}")
 
             if raw is None:
                 logger.warning("⚠️ [LLM.generate] 响应内容为 None")

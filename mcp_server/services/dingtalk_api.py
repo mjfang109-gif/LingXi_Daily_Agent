@@ -41,14 +41,14 @@ class DingTalkService:
         if cls._token and time.time() < cls._token_expire_at:
             logger.debug("使用缓存的 DingTalk AccessToken")
             return cls._token
-        
+
         # 使用锁保护 Token 刷新过程
         with cls._token_lock:
             # 再次检查，防止多个线程同时等待锁后重复刷新
             if cls._token and time.time() < cls._token_expire_at:
                 logger.debug("使用缓存的 DingTalk AccessToken (锁内检查)")
                 return cls._token
-            
+
             logger.info("--- [API Call] 获取钉钉 AccessToken ---")
 
             if not Config.CLIENT_ID or not Config.CLIENT_SECRET:
@@ -114,7 +114,7 @@ class DingTalkService:
         """
         logger.info("--- [API Call] 提交钉钉工作日志 ---")
         logger.info(
-            f"入参: today_work_len={len(today_work)}, tomorrow_plan_len={len(tomorrow_plan)}, user_id={user_id}, template_id={template_id}")
+            f"入参: today_work={today_work}, tomorrow_plan={tomorrow_plan}, user_id={user_id}, template_id={template_id}")
 
         try:
             token = cls.get_token()
@@ -331,16 +331,16 @@ class DingTalkService:
                     # 尝试从多个可能的字段名中获取 template_id
                     # 根据实际测试，钉钉API返回的字段名为 template_id
                     tmpl_id = t.get("template_id")
-                    
+
                     tmpl_name = t.get("name") or t.get("template_name")
-                    
+
                     templates.append({
                         "name": tmpl_name,
                         "template_id": tmpl_id,
                         # 保留原始数据以便调试
                         "_raw": t
                     })
-                
+
                 logger.info(f"✅ 查询到 {len(templates)} 个模板")
                 logger.debug(f"模板详情: {json.dumps(templates, ensure_ascii=False, indent=2)}")
                 return {"success": True, "templates": templates}

@@ -199,29 +199,16 @@ class DingTalkMessageService:
             mode_tip = "请回复 **Y** 确认发送，或 **N** 取消。"
             logger.info("[SendCard] 模式: 手动确认模式 (Manual)")
 
-        # 处理换行：确保每行末尾有两个空格（Markdown 硬换行语法）
+        # 处理换行：确保格式正确
         def format_markdown_lines(text: str) -> str:
             if not text:
                 return ""
             # 先统一换行符格式
             text = text.replace("\\n", "\n")
-            # 为每一行添加两个空格以实现 Markdown 硬换行
-            lines = text.split("\n")
-            formatted_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                # 检测是否为分类标题（以"一、"、"二、"等中文数字开头）
-                import re
-                if re.match(r'^[一二三四五六七八九十]+、', stripped):
-                    # 分类标题加粗显示
-                    formatted_lines.append(f"**{stripped}**  ")
-                else:
-                    # 普通任务行
-                    formatted_lines.append(stripped + "  ")
-            return "\n".join(formatted_lines)
+            # 直接返回文本，LLM 已经生成了正确的 Markdown 格式
+            return text.strip()
 
+        logger.info(f"[SendCard] 正在生成 Markdown 内容,今日工作: {today_work}，明日计划: {tomorrow_plan}")
         md_lines = [
             f"## {title}",
             "",
