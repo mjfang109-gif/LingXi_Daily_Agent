@@ -39,14 +39,24 @@ def _build_report_for_user(user_id: str) -> tuple[dict, int]:
 
     today_str = datetime.now().strftime("%Y-%m-%d")
 
+    # 尝试从缓存中获取日报（版本匹配时）
+    cached_report = UserStore.get_cached_report(user_id, today_str, version)
+    if cached_report:
+        logger.info(f"✅ [日报缓存] 命中缓存，直接使用 (user={user_id}, date={today_str}, v{version})")
+        return cached_report, version
+
     # 严格按照当天切分
     today_t = [t for t in tasks if t["date"] == today_str]
     future_t = [t for t in tasks if t["date"] > today_str]
 
     if not today_t and not future_t:
-        return {"today_work": "（今日无任务）", "tomorrow_plan": "（无）", "summary_card": ""}, version
-
-    report = ReportGenerator().generate(today_t, future_t)
+        report = {"today_work": "（今日无任务）", "tomorrow_plan": "（无）", "summary_card": ""}
+    else:
+        report = ReportGenerator().generate(today_t, future_t)
+        # 缓存生成的日报
+        UserStore.cache_report(user_id, today_str, report, version)
+        logger.info(f"💾 [日报缓存] 已缓存新日报 (user={user_id}, date={today_str}, v{version})")
+    
     return report, version
 
 

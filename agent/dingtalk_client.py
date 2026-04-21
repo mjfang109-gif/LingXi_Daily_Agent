@@ -122,37 +122,85 @@ class DingTalkClient:
 
                     threading.Thread(target=_preload_templates, daemon=True).start()
 
-                    # 核心修改：子线程执行多天实时预览生成
+                    # 核心修改：子线程执行多天实时预览生成（并行优化）
                     def _send_realtime_previews():
                         logger.info(f"🚀 [实时预览线程启动] 用户: {sender_id}")
                         try:
                             from agent.llm_client import ReportGenerator
                             from datetime import datetime
+                            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                            # 1. 获取最新任务
+                            # 1. 先清理过期任务（与最终发送保持一致）
+                            UserStore.clean_outdated(sender_id)
+                            
+                            # 2. 获取最新任务
                             all_tasks = UserStore.get_tasks(sender_id)
 
-                            # 2. 强制过滤过期任务 (双重保险)
-                            today_str = datetime.now().strftime("%Y-%m-%d")
-                            valid_tasks = [t for t in all_tasks if t["date"] >= today_str]
-
-                            if not valid_tasks:
-                                logger.warning("⚠️ [实时预览] 无有效未来任务，跳过预览")
+                            if not all_tasks:
+                                logger.warning("⚠️ [实时预览] 无有效任务，跳过预览")
                                 return
 
                             # 3. 提取不重复的日期
-                            unique_dates = sorted(list(set(t["date"] for t in valid_tasks)))
+                            unique_dates = sorted(list(set(t["date"] for t in all_tasks)))
                             logger.info(f"📅 [实时预览] 检测到 {len(unique_dates)} 个有效日期: {unique_dates}")
 
-                            for idx, date_str in enumerate(unique_dates):
-                                # 按照特定日期分组
-                                today_t = [t for t in valid_tasks if t["date"] == date_str]
-                                future_t = [t for t in valid_tasks if t["date"] > date_str]
+                            # 4. 定义单个日期的生成函数
+                            def generate_report_for_date(date_str: str) -> dict:
+                                """为指定日期生成日报"""
+                                today_t = [t for t in all_tasks if t["date"] == date_str]
+                                future_t = [t for t in all_tasks if t["date"] > date_str]
 
-                                logger.info(
-                                    f"🤖 [LLM] 生成 {date_str} 日报... (今日:{len(today_t)}, 未来:{len(future_t)})")
-                                report = ReportGenerator().generate(today_t, future_t)
+                                # 获取当前任务版本
+                                current_version = UserStore.get_task_version(sender_id)
+                                
+                                # 尝试从缓存中获取日报
+                                cached_report = UserStore.get_cached_report(sender_id, date_str, current_version)
+                                
+                                if cached_report:
+                                    logger.info(f"✅ [实时预览] 命中缓存: {date_str} (v{current_version})")
+                                    report = cached_report
+                                else:
+                                    logger.info(f"🤖 [LLM] 生成 {date_str} 日报... (今日:{len(today_t)}, 未来:{len(future_t)})")
+                                    report = ReportGenerator().generate(today_t, future_t)
+                                    # 缓存生成的日报
+                                    UserStore.cache_report(sender_id, date_str, report, current_version)
+                                    logger.info(f"💾 [实时预览] 已缓存日报: {date_str} (v{current_version})")
+                                
+                                return {
+                                    "date_str": date_str,
+                                    "report": report,
+                                    "today_t_count": len(today_t),
+                                    "future_t_count": len(future_t)
+                                }
 
+                            # 5. 并行生成所有日期的日报
+                            reports_data = []
+                            max_workers = min(len(unique_dates), 5)  # 最多5个并发
+                            logger.info(f"⚡ [并行优化] 使用 {max_workers} 个工作线程并行生成日报")
+                            
+                            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                # 提交所有任务
+                                future_to_date = {
+                                    executor.submit(generate_report_for_date, date_str): date_str
+                                    for date_str in unique_dates
+                                }
+                                
+                                # 收集结果
+                                for future in as_completed(future_to_date):
+                                    date_str = future_to_date[future]
+                                    try:
+                                        result = future.result()
+                                        reports_data.append(result)
+                                        logger.info(f"   ✅ [{date_str}] 生成完成")
+                                    except Exception as e:
+                                        logger.error(f"   ❌ [{date_str}] 生成失败: {e}")
+
+                            # 6. 按日期排序并发送卡片
+                            reports_data.sort(key=lambda x: x["date_str"])
+                            
+                            for item in reports_data:
+                                date_str = item["date_str"]
+                                report = item["report"]
                                 title = f"实时日报预览 ({date_str})"
 
                                 # 发送 Markdown 卡片

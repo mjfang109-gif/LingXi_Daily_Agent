@@ -5,7 +5,7 @@
 
 # 定时任务配置
 scheduler:
-  report_time: "14:50"          # 每天生成日报的触发时间 (HH:MM)
+  report_time: "09:05"          # 每天生成日报的触发时间 (HH:MM)
   confirm_timeout_min: 15       # 人工确认等待窗口（分钟）
   check_interval_sec: 10        # 任务热更新轮询间隔（秒）
 
@@ -39,7 +39,7 @@ llm:
   # - zhipu: 智谱 GLM，使用 extra_body.search_retrieval
   # - custom: 自定义 extra_body 参数
   web_search:
-    provider: "zhipu"  # 默认启用阿里千问联网
+    provider: "qwen"  # 默认启用阿里千问联网
   chat_system_prompt: |
     你现在是 LingXi 办公助理，一个全能的 AI 助手。你的核心本职工作是帮用户整理工作日报。
     但此时用户没有发送任务清单，而是在和你交流（提问、闲聊、查资料等）。

@@ -68,7 +68,7 @@ class AIChatEngine:
             logger.debug(f"用户输入内容: {user_msg}")
             logger.debug(f"System Prompt: {self._system_prompt}")
 
-            # 处理联网搜索配置
+            # 核心修复：智能判断是否需要联网搜索
             extra_body = {}
             if self._web_search_config:
                 provider = ""
@@ -79,26 +79,40 @@ class AIChatEngine:
                     if self._web_search_config is True:
                         provider = "qwen"
 
-                if provider == "qwen":
-                    extra_body = {"enable_search": True}
-                    logger.info("启用阿里千问联网搜索")
-                elif provider == "deepseek":
-                    extra_body = {"enable_search": True}
-                    logger.info("启用 DeepSeek 联网搜索")
-                elif provider == "moonshot":
-                    extra_body = {"search_options": {"enable": True}}
-                    logger.info("启用 Moonshot 月之暗面联网搜索")
-                elif provider == "zhipu":
-                    extra_body = {"search_retrieval": True}
-                    logger.info("启用智谱 GLM 联网搜索")
-                elif provider == "custom":
-                    extra_body = self._web_search_config.get("extra_body", {})
-                    logger.info(f"启用自定义联网搜索: {extra_body}")
+                # 定义需要联网的场景关键词
+                user_msg_lower = user_msg.lower()
+                search_keywords = [
+                    '天气', '新闻', '资讯', '查询', '搜索', '最新', '实时',
+                    '股票', '汇率', '比分', '排名', '价格', '路线',
+                    'weather', 'news', 'search', 'latest', 'stock'
+                ]
+                
+                # 检查用户输入是否包含搜索关键词
+                need_search = any(keyword in user_msg_lower for keyword in search_keywords)
+                
+                if need_search:
+                    if provider == "qwen":
+                        extra_body = {"enable_search": True}
+                        logger.info("启用阿里千问联网搜索")
+                    elif provider == "deepseek":
+                        extra_body = {"enable_search": True}
+                        logger.info("启用 DeepSeek 联网搜索")
+                    elif provider == "moonshot":
+                        extra_body = {"search_options": {"enable": True}}
+                        logger.info("启用 Moonshot 月之暗面联网搜索")
+                    elif provider == "zhipu":
+                        extra_body = {"search_retrieval": True}
+                        logger.info("启用智谱 GLM 联网搜索")
+                    elif provider == "custom":
+                        extra_body = self._web_search_config.get("extra_body", {})
+                        logger.info(f"启用自定义联网搜索: {extra_body}")
+                    else:
+                        if provider:
+                            logger.warning(f"未知的 provider '{provider}'，默认使用千问联网参数")
+                        extra_body = {"enable_search": True}
+                        logger.info("启用联网搜索（默认千问）")
                 else:
-                    if provider:
-                        logger.warning(f"未知的 provider '{provider}'，默认使用千问联网参数")
-                    extra_body = {"enable_search": True}
-                    logger.info("启用联网搜索（默认千问）")
+                    logger.debug("无需联网搜索，直接使用模型生成")
 
             # 构建调用参数
             call_kwargs = {

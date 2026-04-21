@@ -28,6 +28,8 @@ class UserSession:
     templates_cache: dict = field(default_factory=dict)
     default_template_id: str = ""  # 用户的默认模板（最近使用的）
     last_active: datetime = field(default_factory=datetime.now)  # 最后活动时间，用于清理闲置会话
+    # 新增：日报缓存 {date_str: {"today_work": "...", "tomorrow_plan": "...", "version": int}}
+    report_cache: dict = field(default_factory=dict)
 
     def merge_tasks(self, new_tasks: list) -> int:
         """
@@ -519,3 +521,70 @@ class UserStore:
             logger.info(f"📊 共清理 {len(inactive_users)} 个闲置会话")
         
         return len(inactive_users)
+
+    @classmethod
+    def cache_report(cls, user_id: str, date_str: str, report: dict, version: int):
+        """
+        缓存生成的日报内容。
+        
+        Args:
+            user_id (str): 用户唯一标识。
+            date_str (str): 日期字符串（YYYY-MM-DD）。
+            report (dict): 日报内容 {"today_work": "...", "tomorrow_plan": "..."}。
+            version (int): 任务版本号。
+        """
+        session = cls.get_or_create(user_id)
+        with session._lock:
+            session.report_cache[date_str] = {
+                "today_work": report.get("today_work", ""),
+                "tomorrow_plan": report.get("tomorrow_plan", ""),
+                "version": version,
+            }
+            logger.debug(f"💾 [cache_report] 缓存日报: {user_id} @ {date_str} (v{version})")
+
+    @classmethod
+    def get_cached_report(cls, user_id: str, date_str: str, current_version: int) -> Optional[dict]:
+        """
+        获取缓存的日报内容（如果版本匹配）。
+        
+        Args:
+            user_id (str): 用户唯一标识。
+            date_str (str): 日期字符串（YYYY-MM-DD）。
+            current_version (int): 当前任务版本号。
+            
+        Returns:
+            Optional[dict]: 缓存的日报内容，如果不存在或版本不匹配则返回 None。
+        """
+        session = cls.get_or_create(user_id)
+        with session._lock:
+            cached = session.report_cache.get(date_str)
+            if cached and cached.get("version") == current_version:
+                logger.debug(f"✅ [get_cached_report] 命中缓存: {user_id} @ {date_str} (v{current_version})")
+                return {
+                    "today_work": cached["today_work"],
+                    "tomorrow_plan": cached["tomorrow_plan"],
+                }
+            else:
+                if cached:
+                    logger.debug(f"⚠️ [get_cached_report] 版本不匹配: {user_id} @ {date_str} (缓存v{cached.get('version')}, 当前v{current_version})")
+                else:
+                    logger.debug(f"❌ [get_cached_report] 未找到缓存: {user_id} @ {date_str}")
+                return None
+
+    @classmethod
+    def clear_report_cache(cls, user_id: str, date_str: str = None):
+        """
+        清除日报缓存。
+        
+        Args:
+            user_id (str): 用户唯一标识。
+            date_str (str, optional): 指定日期的缓存，如果为 None 则清除所有缓存。
+        """
+        session = cls.get_or_create(user_id)
+        with session._lock:
+            if date_str:
+                session.report_cache.pop(date_str, None)
+                logger.debug(f"🗑️ [clear_report_cache] 清除缓存: {user_id} @ {date_str}")
+            else:
+                session.report_cache.clear()
+                logger.debug(f"🗑️ [clear_report_cache] 清除所有缓存: {user_id}")
